@@ -50,11 +50,17 @@ df = ApplyMapping.apply(
               ("birth_date", "string", "birth_date", "date")], 
     transformation_ctx="ChangeSchema")
 
-df =  DynamicFrame.fromDF(
-        df.toDF().dropDuplicates(["email"]), 
-        glueContext, 
-        "DropDuplicates"
-    )
+df_spark =  df.toDF().dropDuplicates(["email"]).cache()
+
+# 実際にアクションをトリガーしてキャッシュする（推奨）
+df_spark.count()
+
+# キャッシュされたDataFrameをDynamicFrameに戻す
+df = DynamicFrame.fromDF(
+    df_spark,
+    glueContext,
+    "DropDuplicates"
+)
 
 # Script generated for node Select Fields
 #SelectFields_node1754063701594 = SelectFields.apply(
@@ -62,29 +68,29 @@ df =  DynamicFrame.fromDF(
 #    paths=["id", "username"],
 #    transformation_ctx="SelectFields_node1754063701594"
 #)
-df = df.coalesce(1)
+# df = df.coalesce(1)
 
-glueContext.write_dynamic_frame.from_options(
-    frame=df,
-    connection_type="s3",
-    format="csv",
-    connection_options={
-        "path": s3_output_path,
-        "partitionKeys": []
-    },
-    transformation_ctx="WriteToS3"
-)
+# glueContext.write_dynamic_frame.from_options(
+#     frame=df,
+#     connection_type="s3",
+#     format="csv",
+#     connection_options={
+#         "path": s3_output_path,
+#         "partitionKeys": []
+#     },
+#     transformation_ctx="WriteToS3"
+# )
 
-print("S3出力")
-print(df.toDF().count())
+# print("S3出力")
+# print(df.toDF().count())
 
-s3 = boto3.client("s3")
-resp = s3.list_objects_v2(Bucket=bucket, Prefix=prefix)
-print("S3結果")
-print(resp)
-filename = resp["Contents"][0]["Key"]
-
-# conn_options = glueContext.extract_jdbc_conf("Aurora connection")
+# s3 = boto3.client("s3")
+# resp = s3.list_objects_v2(Bucket=bucket, Prefix=prefix)
+# print("S3結果")
+# print(resp)
+# filename = resp["Contents"][0]["Key"]
+# print(prefix,filename)
+conn_options = glueContext.extract_jdbc_conf("Aurora connection")
 
 # # AuroraにCOPY SQLを実行（psycopg2）
 # conn = psycopg2.connect(
@@ -110,34 +116,35 @@ filename = resp["Contents"][0]["Key"]
 # cur.close()
 # conn.close()
 
-# df = df.toDF()
-# df.write \
-#     .format("jdbc") \
-#     .option("url", conn_options["fullUrl"]) \
-#     .option("dbtable", "users") \
-#     .option("user", conn_options["user"]) \
-#     .option("password", conn_options["password"]) \
-#     .option("batchsize", "100000") \
-#     .mode("append") \
-#     .save()
-glueContext.write_dynamic_frame.from_options(
-    frame=empty_df,
-    connection_type="postgresql",
-    connection_options={
-        "useConnectionProperties": "true",
-        "connectionName": "Aurora connection",
-        "dbtable": "users",  # 書き込み対象のダミー
-        "preactions": f"""
-            SELECT aws_s3.table_import_from_s3(
-            'users',
-            'username,email,first_name,last_name,birth_date',
-            '(format csv, header)',
-               aws_commons.create_s3_uri('{bucket}', '{filename}','ap-northeast-1')
-            );
-        """,
-        "postactions": ""  # ログ記録等入れても良い
-    },
-    transformation_ctx="ExecuteCopy"
-)
+df = df.toDF()
+df.write \
+    .format("jdbc") \
+    .option("url", conn_options["fullUrl"]+"?reWriteBatchedInserts=true") \
+    .option("dbtable", "users") \
+    .option("user", conn_options["user"]) \
+    .option("password", conn_options["password"]) \
+    .option("batchsize", "100000") \
+    .option("numPartitions", "4") \
+    .mode("append") \
+    .save()
+# preactions = f" \
+#             SELECT aws_s3.table_import_from_s3( \
+#             'users', \
+#             'username,email,first_name,last_name,birth_date', \
+#             '(format csv, header)', \
+#             aws_commons.create_s3_uri('{bucket}', '{filename}','ap-northeast-1') \
+#             );"
+# glueContext.write_dynamic_frame.from_options(
+#     frame=empty_df,
+#     connection_type="postgresql",
+#     connection_options={
+#         "useConnectionProperties": "true",
+#         "connectionName": "Aurora connection",
+#         "dbtable": "users",  # 書き込み対象のダミー
+#         "preactions": preactions,
+#         "postactions": ""  # ログ記録等入れても良い
+#     },
+#     transformation_ctx="ExecuteCopy"
+# )
 
 job.commit()
